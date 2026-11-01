@@ -1,0 +1,21 @@
+name: Supabase keep-alive
+
+# Holder Supabase-prosjektet "Legetaksting" aktivt (gratisplanen pauses etter 7 dager uten databasebruk).
+# Henter prosjekt-URL og publishable-nøkkel fra portal-funksjonen og leser én rad fra takster.
+on:
+  schedule:
+    - cron: "17 5,17 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Les fra databasen
+        run: |
+          cfg=$(curl -fsS --retry 3 https://jsgfbxbjmnyvrdauqnge.supabase.co/functions/v1/portal)
+          url=$(echo "$cfg" | jq -r '.url')
+          key=$(echo "$cfg" | jq -r '.anonKey')
+          curl -fsS --retry 3 "$url/rest/v1/takster?select=kode&limit=1" -H "apikey: $key" -H "Authorization: Bearer $key"
+          echo
+          echo "OK $(date -u)"
