@@ -30,6 +30,10 @@ textarea{width:100%;min-height:140px;border:1px solid var(--line);border-radius:
 .btn.secondary{background:transparent;color:var(--accent)}
 .btn.small{padding:6px 12px;font-size:13px;font-weight:500}
 .btn:disabled{opacity:.55;cursor:default}
+.fotorad{display:flex;gap:8px;margin-bottom:10px}
+.fotorad .btn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 18px}
+.fotoprev{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:13px;color:var(--muted)}
+.fotoprev img{width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
 .hint{font-size:12px;color:var(--muted);margin:8px 0 0}
 .status{font-size:13px;color:var(--muted);min-height:1.2em}
 .innst{margin-top:10px;display:grid;gap:6px}
@@ -114,6 +118,13 @@ footer{font-size:12px;color:var(--muted);padding-top:8px}
 
   <section class="card">
     <h2>Hva gjorde du</h2>
+    <div class="fotorad">
+      <button class="btn" id="foto" type="button">📷 Ta bilde av teksten</button>
+      <button class="btn secondary small" id="fotovalg" type="button" title="Velg bilde fra galleriet">🖼</button>
+    </div>
+    <input type="file" id="foto-inp" accept="image/*" capture="environment" hidden>
+    <input type="file" id="foto-galleri" accept="image/*" hidden>
+    <div class="fotoprev" id="fotoprev" hidden><img id="fotoimg" alt="Siste bilde"><span id="fotostatus"></span></div>
     <textarea id="tekst" placeholder="Snakk inn med mikrofonen på tastaturet, eller skriv. F.eks.: «Dame med brystsmerter, akutt debut. Vanlig konsultasjon, klinisk undersøkelse og EKG. Tok 25 minutter.»"></textarea>
     <div class="actions" style="margin-top:10px">
       <button class="btn" id="go">Foreslå takster</button>
@@ -462,7 +473,7 @@ footer{font-size:12px;color:var(--muted);padding-top:8px}
     rec.start(); lytter=true; $('#mic').textContent='■ Stopp';
   });}
 
-  $('#clear').addEventListener('click',()=>{if(lytter&&rec){try{rec.abort();}catch(e){}lytter=false;$('#mic').textContent='🎙 Diktér';}$('#tekst').value='';state.forslag=null;state.sist=null;state.histId=null;state.valg={};state.rekke=[];['#resultat','#oppsum','#besvart','#sumbar'].forEach(s=>$(s).hidden=true);$('#status').textContent='';renderRef($('#sok').value);});
+  $('#clear').addEventListener('click',()=>{if(lytter&&rec){try{rec.abort();}catch(e){}lytter=false;$('#mic').textContent='🎙 Diktér';}$('#tekst').value='';$('#fotoprev').hidden=true;$('#fotoimg').removeAttribute('src');state.forslag=null;state.sist=null;state.histId=null;state.valg={};state.rekke=[];['#resultat','#oppsum','#besvart','#sumbar'].forEach(s=>$(s).hidden=true);$('#status').textContent='';renderRef($('#sok').value);});
 
   // ---- Claude
   const CONFIG_URL='https://jsgfbxbjmnyvrdauqnge.supabase.co/functions/v1/portal';
@@ -528,8 +539,8 @@ footer{font-size:12px;color:var(--muted);padding-top:8px}
       lastHistorikk();
     }catch(e){}
   }
-  const sample={json:async(p)=>{const {data:{session:s}}=await sb.auth.getSession(); if(!s) throw {code:'not_granted'};
-    const r=await fetch(PORTAL.url+'/functions/v1/takst',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.access_token,'apikey':PORTAL.anonKey},body:JSON.stringify({prompt:p})});
+  const sample={json:async(p,ekstra)=>{const {data:{session:s}}=await sb.auth.getSession(); if(!s) throw {code:'not_granted'};
+    const r=await fetch(PORTAL.url+'/functions/v1/takst',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.access_token,'apikey':PORTAL.anonKey},body:JSON.stringify(Object.assign({prompt:p},ekstra||{}))});
     const body=await r.json().catch(()=>({}));
     if(!r.ok) throw {code:body.code||'upstream_error',message:body.error||('HTTP '+r.status)};
     return body.result;}};
@@ -584,6 +595,57 @@ Svar KUN med ett JSON-objekt på denne formen:
     }finally{$('#go').disabled=false;}
   }
   $('#go').addEventListener('click',()=>{state.valg={};state.rekke=[];state.histId=null;state._scrolled=false;kjør();});
+
+  // ---- Bilde av tekst: kamera -> les teksten (Claude) -> fyll feltet -> foreslå takster
+  const LES_PROMPT=`Bildet viser tekst fra en norsk legekonsultasjon (journalnotat på skjerm, utskrift, henvisning, labsvar eller håndskrevne notater). Oppgaven: les teksten og gjengi det klinisk relevante innholdet som trengs for å takste kontakten etter Normaltariffen: kontakttype (konsultasjon, telefon, video, sykebesøk osv.), varighet/klokkeslett, problemstilling, undersøkelser, prosedyrer, prøver tatt på kontoret eller sendt, EKG/spirometri o.l., sykmelding, samtaler med pårørende/andre instanser, skjema brukt, resepter og videre plan.
+
+Personvern: utelat navn, fødselsnummer, fødselsdato, adresse, telefonnummer og andre identifikatorer – skriv «pasienten». Alder kan tas med som alder i år.
+Ikke legg til noe som ikke står i bildet. Gjengi i korte, nøkterne setninger på norsk.
+
+Svar KUN med ett JSON-objekt: {"bilde_mottatt":true,"lesbarhet":"god|delvis|dårlig","tekst":"…"}
+Hvis du ikke ser noe bilde i meldingen, svar {"bilde_mottatt":false}.`;
+
+  function bildeTilJpeg(fil,maks=1600){
+    return new Promise((ok,feil)=>{
+      const url=URL.createObjectURL(fil), img=new Image();
+      img.onload=()=>{
+        const k=Math.min(1,maks/Math.max(img.naturalWidth,img.naturalHeight));
+        const c=document.createElement('canvas'); c.width=Math.round(img.naturalWidth*k); c.height=Math.round(img.naturalHeight*k);
+        c.getContext('2d').drawImage(img,0,0,c.width,c.height); URL.revokeObjectURL(url);
+        const d=c.toDataURL('image/jpeg',0.82); ok({vis:d,data:d.split(',')[1]});
+      };
+      img.onerror=()=>{URL.revokeObjectURL(url);feil(new Error('Kunne ikke lese bildet'));};
+      img.src=url;
+    });
+  }
+
+  async function lesBilde(fil){
+    if(!fil) return;
+    const knapper=['#foto','#fotovalg','#go'];
+    knapper.forEach(k=>$(k).disabled=true);
+    $('#fotoprev').hidden=false; $('#fotostatus').textContent='Leser teksten i bildet …'; $('#status').textContent='';
+    try{
+      const b=await bildeTilJpeg(fil); $('#fotoimg').src=b.vis;
+      const r=await sample.json(LES_PROMPT,{image:{media_type:'image/jpeg',data:b.data}});
+      if(!r||r.bilde_mottatt===false||!r.tekst){
+        $('#fotostatus').textContent=r&&r.bilde_mottatt===false?'Bildelesing er ikke slått på i serveren ennå.':'Fant ingen lesbar tekst. Ta bildet nærmere og rett på.';
+        return;
+      }
+      const t=$('#tekst'); t.value=(t.value.trim()?t.value.trim()+'\n\n':'')+String(r.tekst).trim();
+      $('#fotostatus').textContent=r.lesbarhet==='dårlig'?'Teksten var vanskelig å lese – sjekk feltet under.':(r.lesbarhet==='delvis'?'Deler av teksten var utydelig – sjekk feltet under.':'Teksten er lest. Finner takster …');
+      knapper.forEach(k=>$(k).disabled=false);
+      state.valg={};state.rekke=[];state.histId=null;state._scrolled=false;
+      await kjør();
+      if(r.lesbarhet==='god') $('#fotostatus').textContent='Lest fra bilde. Rett i teksten og trykk «Foreslå takster» om noe ble feil.';
+    }catch(e){
+      const m={not_granted:'Du er ikke logget inn, eller e-posten din har ikke tilgang.',rate_limited:'For mange forespørsler – prøv igjen om litt.',invalid_json:'Fikk ikke lest bildet. Prøv igjen.',refused:'Claude avviste bildet.'}[e.code]||('Feil: '+(e.message||e.code));
+      $('#fotostatus').textContent=m;
+    }finally{knapper.forEach(k=>$(k).disabled=false); $('#foto-inp').value=''; $('#foto-galleri').value='';}
+  }
+  $('#foto').addEventListener('click',()=>$('#foto-inp').click());
+  $('#fotovalg').addEventListener('click',()=>$('#foto-galleri').click());
+  $('#foto-inp').addEventListener('change',e=>lesBilde(e.target.files[0]));
+  $('#foto-galleri').addEventListener('change',e=>lesBilde(e.target.files[0]));
   $('#rerun').addEventListener('click',kjør);
 
   function tog(kode,val){return `<div class="tog" role="group"><button class="ja" data-k="${kode}" data-v="1" aria-pressed="${val===true}">Ja</button><button class="nei" data-k="${kode}" data-v="0" aria-pressed="${val===false}">Nei</button></div>`;}
